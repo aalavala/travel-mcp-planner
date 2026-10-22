@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "booking": {
+      "command": "/opt/homebrew/bin/node",
+      "args": [
+        "/path/to/node_modules/hotelzero/dist/index.js"
+      ],
+      "env": {}
+    },
+    "tripadvisor": {
+      "url": "https://production.ai-mcp-extensibility-prd.tamg.cloud/<YOUR_TRIPADVISOR_MCP_TOKEN>/mcp",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+      }
+    },
+    "brek": {
+      "command": "/opt/homebrew/bin/python3",
+      "args": [
+        "/Users/abhi/.gemini/config/skills/travel-planner/scripts/brek_mcp_bridge.py"
+      ]
+    },
+    "letsfg": {
+      "url": "https://letsfg.co/mcp"
+    },
+    "airbnb": {
+      "command": "/opt/homebrew/bin/npx",
+      "args": [
+        "-y",
+        "@openbnb/mcp-server-airbnb",
+        "--ignore-robots-txt"
+      ]
+    },
+    "google-flights": {
+      "command": "/opt/homebrew/bin/python3",
+      "args": [
+        "/Users/abhi/.gemini/config/skills/travel-planner/scripts/google_flights_mcp.py"
+      ]
+    }
+  }
+}
