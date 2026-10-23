@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Send a Markdown travel report to aalavala@gmail.com via AWS SES (HTML + Plain Text)."""
+"""Send a Markdown report as a styled HTML + Plain Text email via Gmail SMTP (macOS Keychain) or AWS SES fallback."""
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import html
 import json
+import os
 import re
+import smtplib
+import ssl
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+DEFAULT_SENDER = os.environ.get("EMAIL_SENDER", "aalavala@gmail.com")
+KEYCHAIN_SERVICE = "gmail-smtp"
 
 
 def inline_md(text: str) -> str:
@@ -147,9 +155,86 @@ def md_to_html(md_text: str) -> str:
     return "\n".join(out)
 
 
+def get_gmail_app_password(sender: str = DEFAULT_SENDER) -> str | None:
+    """Retrieve Gmail App Password from env var or macOS Keychain (service: gmail-smtp)."""
+    env_pw = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+    if env_pw:
+        return env_pw.replace(" ", "")
+    try:
+        res = subprocess.run(
+            ["security", "find-generic-password", "-a", sender, "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        pw = res.stdout.strip().replace(" ", "")
+        return pw if pw else None
+    except subprocess.CalledProcessError:
+        return None
+
+
+def send_via_gmail_smtp(
+    sender: str,
+    app_password: str,
+    recipients: list[str],
+    subject: str,
+    body_text: str,
+    body_html: str,
+) -> None:
+    """Send multipart Plain + HTML email over smtp.gmail.com:465 (SSL)."""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body_text, "plain", "utf-8"))
+    msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=20) as server:
+        server.login(sender, app_password)
+        server.sendmail(sender, recipients, msg.as_string())
+
+
+def send_via_aws_ses(
+    sender: str,
+    recipients: list[str],
+    subject: str,
+    body_text: str,
+    body_html: str,
+) -> str:
+    """Fallback: Send via AWS SES CLI."""
+    payload = {
+        "Source": sender,
+        "Destination": {"ToAddresses": recipients},
+        "Message": {
+            "Subject": {"Data": subject, "Charset": "UTF-8"},
+            "Body": {
+                "Text": {"Data": body_text, "Charset": "UTF-8"},
+                "Html": {"Data": body_html, "Charset": "UTF-8"},
+            },
+        },
+    }
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    ) as tmp:
+        json.dump(payload, tmp)
+        tmp_path = tmp.name
+
+    try:
+        res = subprocess.run(
+            ["aws", "ses", "send-email", "--cli-input-json", f"file://{tmp_path}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return res.stdout.strip()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
 def main() -> int:
     if len(sys.argv) < 2:
-        print("Usage: email_report.py <report.md> [subject] [recipient]")
+        print("Usage: email_report.py <report.md> [subject] [recipient1,recipient2]")
         return 1
 
     report_path = Path(sys.argv[1]).expanduser().resolve()
@@ -166,35 +251,34 @@ def main() -> int:
 
     body_text = report_path.read_text(encoding="utf-8")
     body_html = md_to_html(body_text)
-    payload = {
-        "Source": "aalavala@gmail.com",
-        "Destination": {"ToAddresses": recipients},
-        "Message": {
-            "Subject": {"Data": subject, "Charset": "UTF-8"},
-            "Body": {
-                "Text": {"Data": body_text, "Charset": "UTF-8"},
-                "Html": {"Data": body_html, "Charset": "UTF-8"},
-            },
-        },
-    }
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, encoding="utf-8"
-    ) as tmp:
-        json.dump(payload, tmp)
-        tmp_path = tmp.name
-
-    try:
-        res = subprocess.run(
-            ["aws", "ses", "send-email", "--cli-input-json", f"file://{tmp_path}"],
-            capture_output=True,
-            text=True,
-            check=True,
+    app_password = get_gmail_app_password(DEFAULT_SENDER)
+    if app_password:
+        send_via_gmail_smtp(
+            sender=DEFAULT_SENDER,
+            app_password=app_password,
+            recipients=recipients,
+            subject=subject,
+            body_text=body_text,
+            body_html=body_html,
         )
-        print(res.stdout.strip())
+        print(
+            json.dumps(
+                {
+                    "status": "SENT",
+                    "transport": "gmail-smtp-ssl",
+                    "from": DEFAULT_SENDER,
+                    "to": recipients,
+                    "subject": subject,
+                }
+            )
+        )
         return 0
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+
+    # Fallback to AWS SES if Gmail App Password is not yet in macOS Keychain
+    out = send_via_aws_ses(DEFAULT_SENDER, recipients, subject, body_text, body_html)
+    print(out)
+    return 0
 
 
 if __name__ == "__main__":
